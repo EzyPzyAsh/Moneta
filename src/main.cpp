@@ -3,6 +3,8 @@
 #include <vector>
 #include <sstream>
 #include <fstream>
+#include <algorithm>
+#include <cctype>
 #include "common.h"
 
 #include "tui.h"
@@ -93,6 +95,7 @@ std::vector<TxInfo> get_tx_history(monero_wallet_full* wallet, int limit)
 		count++;
 	}
 
+	monero_utils::free(txs);
 	return result;
 }
 
@@ -162,6 +165,12 @@ static std::string find_config(std::string& config_path)
 	return "";
 }
 
+// Checks that every character in a string is a decimal digit (empty counts as valid)
+static bool is_all_digits(const std::string& s)
+{
+	return std::all_of(s.begin(), s.end(), [](unsigned char c) { return std::isdigit(c); });
+}
+
 // Libraries use piconeros, which is monero * 10^12. Using string to prevent floating point errors
 uint64_t to_piconero(const std::string& xmr_str)
 {
@@ -180,6 +189,9 @@ uint64_t to_piconero(const std::string& xmr_str)
 		integer_part = xmr_str.substr(0, dot);
 		decimal_part = xmr_str.substr(dot + 1);
 	}
+
+	if (integer_part.empty() || !is_all_digits(integer_part) || !is_all_digits(decimal_part))
+		throw std::invalid_argument("Invalid monero amount: " + xmr_str);
 
 	// Pad or truncate decimal to exactly 12 digits
 	if (decimal_part.size() < 12)
@@ -234,17 +246,18 @@ SendResult do_send(monero_wallet_full* wallet, const std::string& address, const
 {
     SendResult result;
     result.success = false;
-    monero_tx_config config;
-    monero_destination dest;
-    dest.m_address = address;
-    dest.m_amount = to_piconero(amount);
-    std::shared_ptr<monero_destination> dest_ptr = std::make_shared<monero_destination>(dest);
-    config.m_destinations.push_back(dest_ptr);
-    config.m_priority = monero_tx_priority::DEFAULT;
-    config.m_relay = relay;
-    config.m_account_index = 0;
     try
     {
+        monero_tx_config config;
+        monero_destination dest;
+        dest.m_address = address;
+        dest.m_amount = to_piconero(amount);
+        std::shared_ptr<monero_destination> dest_ptr = std::make_shared<monero_destination>(dest);
+        config.m_destinations.push_back(dest_ptr);
+        config.m_priority = monero_tx_priority::DEFAULT;
+        config.m_relay = relay;
+        config.m_account_index = 0;
+
         auto txs = wallet->create_txs(config);
         for (const auto& tx : txs)
         {
@@ -353,29 +366,29 @@ int main(int argc, char* argv[])
 	{
 		std::string arg = argv[i];
 
-		if (arg == "-w" && i + 1 < argc)
+		if (arg == "-w")
 		{
-			if (argc < i + 2)
-			{
-				std::cerr << "Enter both a wallet file and password";
-			}
-			else
+			if (i + 2 < argc)
 			{
 				wallet_file = argv[++i];
 				password = argv[++i];
+			}
+			else
+			{
+				std::cerr << "Enter both a wallet file and password\n";
 			}
 		}
 		else if (arg == "-cw")
 		{
-			if (argc < i + 2)
-			{
-				std::cerr << "Enter both a wallet file and password";
-			}
-			else
+			if (i + 2 < argc)
 			{
 				create_wallet_flag = true;
 				wallet_file = argv[++i];
 				password = argv[++i];
+			}
+			else
+			{
+				std::cerr << "Enter both a wallet file and password\n";
 			}
 		}
 		else if (arg == "-ca" && i + 1 < argc)
@@ -393,14 +406,26 @@ int main(int argc, char* argv[])
 		}
 		else if (arg == "-d")
 		{
-			if (argc > i)
+			if (i + 1 < argc)
 			{
 				daemon = argv[++i];
+			}
+			else
+			{
+				std::cerr << "Enter a daemon address\n";
 			}
 		}
 		else if (arg == "-a" && i + 1 < argc)
 		{
-			addr_idx = parse_indices(argv[++i]);
+			std::string idx_arg = argv[++i];
+			try
+			{
+				addr_idx = parse_indices(idx_arg);
+			}
+			catch (const std::exception&)
+			{
+				std::cerr << "Invalid address range: " << idx_arg << "\n";
+			}
 		}
 		else if (arg == "-b")
 		{
@@ -454,9 +479,13 @@ int main(int argc, char* argv[])
 		}
 		else if (arg == "-cfg")
 		{
-			if (argc > i)
+			if (i + 1 < argc)
 			{
 				config_file = argv[++i];
+			}
+			else
+			{
+				std::cerr << "Enter a config file path\n";
 			}
 		}
 		else if (arg == "-lc")
@@ -489,6 +518,9 @@ int main(int argc, char* argv[])
 				std::string line;
 				while (std::getline(conf, line))
 				{
+					if (!line.empty() && line.back() == '\r')
+						line.pop_back();
+
 					size_t eq = line.find('=');
 					if (eq == std::string::npos)
 						continue;
@@ -539,7 +571,10 @@ int main(int argc, char* argv[])
 		wallet->set_daemon_connection(cfg.m_server);
 		wallet->sync();
 		// wallet->rescan_blockchain();
-		wallet->save();
+
+		// Only rewrite the wallet file when something actually changed it;
+		// read-only sub-commands (-b, -tx, -la, -lc, -a) don't need a save.
+		bool wallet_modified = create_wallet_flag;
 
 		// TUI takes over completely if requested — must be checked before
 		// any other flag handling runs, or both would execute.
@@ -573,7 +608,12 @@ int main(int argc, char* argv[])
 		}
 
 		if (transfer_flag)
-			print_send_result(do_send(wallet, dest, amount), script_mode);
+		{
+			SendResult send_result = do_send(wallet, dest, amount);
+			if (send_result.success)
+				wallet_modified = true;
+			print_send_result(send_result, script_mode);
+		}
 
 		if (transfer_contact_flag)
 		{
@@ -582,7 +622,10 @@ int main(int argc, char* argv[])
 			{
 				if (c.name == contact_name)
 				{
-					print_send_result(do_send(wallet, c.address, amount), script_mode);
+					SendResult send_result = do_send(wallet, c.address, amount);
+					if (send_result.success)
+						wallet_modified = true;
+					print_send_result(send_result, script_mode);
 					found = true;
 					break;
 				}
@@ -590,6 +633,9 @@ int main(int argc, char* argv[])
 			if (!found)
 				std::cerr << "Contact not found: " << contact_name << "\n";
 		}
+
+		if (wallet_modified)
+			wallet->save();
 
 		if (!script_mode)
 			std::cout << "\n";

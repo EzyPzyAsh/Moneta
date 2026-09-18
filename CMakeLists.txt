@@ -11,13 +11,8 @@ add_subdirectory(external/monero-cpp)
 
 set(MONETA_SOURCES
     src/main.cpp
+    src/tui.cpp
 )
-
-if(MONETA_TUI)
-    list(APPEND MONETA_SOURCES
-        src/tui.cpp
-    )
-endif()
 
 add_executable(moneta ${MONETA_SOURCES})
 

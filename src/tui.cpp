@@ -208,6 +208,13 @@ static void draw_send_result(const SendResult& result)
 	refresh();
 }
 
+// Guarantees endwin() runs even if an exception unwinds through run_tui,
+// so a wallet/RPC error never leaves the terminal stuck in raw mode.
+struct CursesGuard
+{
+	~CursesGuard() { endwin(); }
+};
+
 static void run_tui(monero::monero_wallet_full* wallet, const std::vector<Contact>& contacts)
 {
 	initscr();
@@ -215,6 +222,7 @@ static void run_tui(monero::monero_wallet_full* wallet, const std::vector<Contac
 	cbreak();
 	keypad(stdscr, TRUE);
 	curs_set(0);
+	CursesGuard curses_guard;
 
 	TuiScreen screen = TuiScreen::MENU;
 	int menu_selected    = 0;
@@ -329,8 +337,6 @@ static void run_tui(monero::monero_wallet_full* wallet, const std::vector<Contac
 				screen = TuiScreen::MENU;
 		}
 	}
-
-	endwin();
 }
 
 bool maybe_run_tui(monero::monero_wallet_full* wallet, bool tui_flag,
