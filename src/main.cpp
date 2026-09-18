@@ -30,9 +30,13 @@ static void print_help()
 	"  -tx <N>             	  	show tx history (0 for all)\n"
 	"  -c                  	  	clean output (CSV output)\n"
 	"  -d <host:port>      	  	daemon address\n"
+	"  -lk <accounts>:<addresses> 	subaddresses to scan for ahead of use (default 50:200)\n"
 	"  -h, --help          	  	show help\n"
 	"  -cfg <path>          	  	config file\n"
-	"  -tui                	  	launch interactive TUI\n";
+#ifdef MONETA_TUI
+	"  -tui                	  	launch interactive TUI\n"
+#endif
+	;
 }
 
 // Gets balance (unlocked and total) of the wallet
@@ -356,6 +360,8 @@ int main(int argc, char* argv[])
 	bool tx_flag = false;
 	std::string contact_name;
 	std::string config_file;
+	boost::optional<uint64_t> lookahead_major;
+	boost::optional<uint64_t> lookahead_minor;
 
 	int tx_limit = 0;
 
@@ -413,6 +419,21 @@ int main(int argc, char* argv[])
 			else
 			{
 				std::cerr << "Enter a daemon address\n";
+			}
+		}
+		else if (arg == "-lk" && i + 1 < argc)
+		{
+			std::string lk_arg = argv[++i];
+			size_t sep = lk_arg.find(':');
+			try
+			{
+				if (sep == std::string::npos) throw std::invalid_argument("missing ':'");
+				lookahead_major = std::stoull(lk_arg.substr(0, sep));
+				lookahead_minor = std::stoull(lk_arg.substr(sep + 1));
+			}
+			catch (const std::exception&)
+			{
+				std::cerr << "Invalid lookahead, expected <accounts>:<addresses>: " << lk_arg << "\n";
 			}
 		}
 		else if (arg == "-a" && i + 1 < argc)
@@ -532,6 +553,21 @@ int main(int argc, char* argv[])
 					if (key == "password" && password.empty())    password = val;
 					if (key == "daemon" && daemon.empty())        daemon = val;
 
+					if (key == "lookahead" && !lookahead_major)
+					{
+						size_t sep = val.find(':');
+						try
+						{
+							if (sep == std::string::npos) throw std::invalid_argument("missing ':'");
+							lookahead_major = std::stoull(val.substr(0, sep));
+							lookahead_minor = std::stoull(val.substr(sep + 1));
+						}
+						catch (const std::exception&)
+						{
+							std::cerr << "Invalid lookahead in config, expected <accounts>:<addresses>: " << val << "\n";
+						}
+					}
+
 					if (key == "contact")
 					{
 						size_t sep = val.find(':');
@@ -562,19 +598,20 @@ int main(int argc, char* argv[])
 		cfg.m_password = password;
 		cfg.m_path = wallet_file;
 		cfg.m_server = monero_rpc_connection(daemon);
+		if (lookahead_major && lookahead_minor)
+		{
+			cfg.m_account_lookahead = *lookahead_major;
+			cfg.m_subaddress_lookahead = *lookahead_minor;
+		}
 
 		if (create_wallet_flag)
 			wallet = monero_wallet_full::create_wallet(cfg);
 		else
-			wallet = monero_wallet_full::open_wallet(wallet_file, password, monero_network_type::MAINNET);
+			wallet = monero_wallet_full::open_wallet(wallet_file, password, monero_network_type::MAINNET, false, lookahead_major, lookahead_minor);
 
 		wallet->set_daemon_connection(cfg.m_server);
 		wallet->sync();
 		// wallet->rescan_blockchain();
-
-		// Only rewrite the wallet file when something actually changed it;
-		// read-only sub-commands (-b, -tx, -la, -lc, -a) don't need a save.
-		bool wallet_modified = create_wallet_flag;
 
 		// TUI takes over completely if requested — must be checked before
 		// any other flag handling runs, or both would execute.
@@ -610,8 +647,6 @@ int main(int argc, char* argv[])
 		if (transfer_flag)
 		{
 			SendResult send_result = do_send(wallet, dest, amount);
-			if (send_result.success)
-				wallet_modified = true;
 			print_send_result(send_result, script_mode);
 		}
 
@@ -623,8 +658,6 @@ int main(int argc, char* argv[])
 				if (c.name == contact_name)
 				{
 					SendResult send_result = do_send(wallet, c.address, amount);
-					if (send_result.success)
-						wallet_modified = true;
 					print_send_result(send_result, script_mode);
 					found = true;
 					break;
@@ -634,8 +667,7 @@ int main(int argc, char* argv[])
 				std::cerr << "Contact not found: " << contact_name << "\n";
 		}
 
-		if (wallet_modified)
-			wallet->save();
+		wallet->save();
 
 		if (!script_mode)
 			std::cout << "\n";
