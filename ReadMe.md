@@ -15,17 +15,22 @@ yay -S --needed base-devel cmake pkgconf openssl zeromq libsodium unbound \
 ## Building from Source
 
 ```bash
-git clone <repo-url>
+git clone --recurse-submodules <repo-url>
 cd Moneta
 ```
 
-Build external dependencies:
+If you already cloned without `--recurse-submodules`, fetch the submodules with:
+
+```bash
+git submodule update --init --recursive
+```
+
+Build external dependencies (this builds monero-project's static libraries; Moneta's own
+CMake build compiles monero-cpp itself, so nothing needs to be linked or copied here):
 
 ```bash
 cd external/monero-project
-rm -r build
 make release-static -j$(nproc)   # on WSL, use about half your processors to prevent crash
-ln build/libmonero-cpp.so ../
 cd ../../
 ```
 
