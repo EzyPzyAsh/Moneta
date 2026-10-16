@@ -34,6 +34,11 @@ make release-static -j$(nproc)   # on WSL, use about half your processors to pre
 cd ../../
 ```
 
+`release-static` needs static Boost libraries. If CMake reports `Could NOT find Boost
+(missing: filesystem thread ...)` even though Boost is installed (e.g. Gentoo without the
+`static-libs` USE flag), use `make release -j$(nproc)` instead; it builds the same
+libraries into the same place but links Boost dynamically.
+
 Build Moneta:
 
 ```bash
